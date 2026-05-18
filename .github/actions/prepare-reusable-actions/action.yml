@@ -1,0 +1,30 @@
+name: Prepare Reusable Actions
+description: Checkout the shared reusable-actions repository into the current workspace.
+
+inputs:
+  repository:
+    description: Repository in owner/name format
+    required: true
+  ref:
+    description: Branch, tag, or SHA to checkout
+    required: false
+    default: main
+  path:
+    description: Local checkout path
+    required: false
+    default: ./.reusable-actions
+  token:
+    description: Optional token for private repository checkout
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout reusable actions repository
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.repository }}
+        ref: ${{ inputs.ref }}
+        path: ${{ inputs.path }}
+        token: ${{ inputs.token != '' && inputs.token || github.token }}

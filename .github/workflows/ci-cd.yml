@@ -1,0 +1,237 @@
+name: CI/CD Automation
+
+on:
+  push:
+    branches:
+      - "**"
+
+env:
+  APPLICATION: shoplite-order-service
+  APPLICATION_NAME: order-service
+  ENVIRONMENT: sandbox
+  IMAGE_NAME: shoplite-order-service
+  IMAGE_REPOSITORY: ghcr.io/shoplite-project/shoplite-order-service
+  K8S_REPO: ShopLite-Project/Kubernetes-ArgoCD-Deployments
+  K8S_MANIFEST_PATH: environments/sandbox/applications/shoplite/shoplite-order-service/values.yaml
+  REUSABLE_REPO: ShopLite-Project/reusable-workflows
+  REUSABLE_REF: main
+  REUSABLE_PATH: ./.reusable-actions
+  APP_PROJECT_NAME: shoplite
+  APP_NAMESPACE: shoplite-sandbox
+  ARGOCD_SERVER: argocd.sandbox.shoplite.local
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+  actions: read
+
+jobs:
+  Continue-Secret-Detection-Gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout order-service repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout reusable composite actions
+        uses: ./.github/actions/prepare-reusable-actions
+        with:
+          repository: ${{ env.REUSABLE_REPO }}
+          ref: ${{ env.REUSABLE_REF }}
+          path: ${{ env.REUSABLE_PATH }}
+
+      - name: Run Gitleaks composite action
+        uses: ./.reusable-actions/.github/actions/gitleaks
+        with:
+          scan_path: .
+          fail_on_leak: "true"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  Continue-Unit-Test:
+    needs: [Continue-Secret-Detection-Gitleaks]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout order-service repository
+        uses: actions/checkout@v4
+
+      - name: Checkout reusable composite actions
+        uses: ./.github/actions/prepare-reusable-actions
+        with:
+          repository: ${{ env.REUSABLE_REPO }}
+          ref: ${{ env.REUSABLE_REF }}
+          path: ${{ env.REUSABLE_PATH }}
+
+      - name: Run Node CI composite action
+        uses: ./.reusable-actions/.github/actions/node-ci
+        with:
+          node_version: "20"
+          install_command: npm ci
+          test_command: npm run test:coverage
+          build_command: npm run build
+
+  Continue-IaC-Validation-Checkov:
+    needs: [Continue-Unit-Test]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout order-service repository
+        uses: actions/checkout@v4
+
+      - name: Checkout reusable composite actions
+        uses: ./.github/actions/prepare-reusable-actions
+        with:
+          repository: ${{ env.REUSABLE_REPO }}
+          ref: ${{ env.REUSABLE_REF }}
+          path: ${{ env.REUSABLE_PATH }}
+
+      - name: Run Checkov composite action
+        uses: ./.reusable-actions/.github/actions/checkov
+        with:
+          directory: .
+          framework: dockerfile
+          soft_fail: "false"
+
+  Continue-Vulnerability-Scan-Trivy:
+    needs: [Continue-IaC-Validation-Checkov]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout order-service repository
+        uses: actions/checkout@v4
+
+      - name: Checkout reusable composite actions
+        uses: ./.github/actions/prepare-reusable-actions
+        with:
+          repository: ${{ env.REUSABLE_REPO }}
+          ref: ${{ env.REUSABLE_REF }}
+          path: ${{ env.REUSABLE_PATH }}
+
+      - name: Run Trivy composite action
+        uses: ./.reusable-actions/.github/actions/trivy
+        with:
+          scan_type: fs
+          scan_path: .
+          severity: CRITICAL,HIGH
+          exit_code: "1"
+
+  Continue-Image-Build-Push:
+    needs: [Continue-Vulnerability-Scan-Trivy]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout order-service repository
+        uses: actions/checkout@v4
+
+      - name: Checkout reusable composite actions
+        uses: ./.github/actions/prepare-reusable-actions
+        with:
+          repository: ${{ env.REUSABLE_REPO }}
+          ref: ${{ env.REUSABLE_REF }}
+          path: ${{ env.REUSABLE_PATH }}
+
+      - name: Build and optionally push Docker image
+        uses: ./.reusable-actions/.github/actions/docker-build-push
+        with:
+          image_name: ${{ env.IMAGE_REPOSITORY }}
+          dockerfile: Dockerfile
+          context: .
+          push: ${{ github.ref == 'refs/heads/main' && 'true' || 'false' }}
+          tags: |
+            sandbox-${{ github.sha }}
+            sandbox-latest
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+  Continue-K8s-Update-Image-Tag:
+    needs: [Continue-Image-Build-Push]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout reusable composite actions
+        uses: ./.github/actions/prepare-reusable-actions
+        with:
+          repository: ${{ env.REUSABLE_REPO }}
+          ref: ${{ env.REUSABLE_REF }}
+          path: ${{ env.REUSABLE_PATH }}
+
+      - name: Update deployment manifest image tag
+        uses: ./.reusable-actions/.github/actions/update-k8s-image-tag
+        with:
+          github_token: ${{ secrets.CROSS_REPO_TOKEN }}
+          target_repository: ${{ env.K8S_REPO }}
+          target_branch: main
+          manifest_path: ${{ env.K8S_MANIFEST_PATH }}
+          image_tag: sandbox-${{ github.sha }}
+          yaml_key_path: image.tag
+          commit_user_name: github-actions[bot]
+          commit_user_email: 41898282+github-actions[bot]@users.noreply.github.com
+          commit_message: "chore(shoplite-order-service): update image to sandbox-${{ github.sha }}"
+
+  Continue-ArgoCD-Sync:
+    needs: [Continue-K8s-Update-Image-Tag]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout order-service repository
+        uses: actions/checkout@v4
+
+      - name: Checkout reusable composite actions
+        uses: ./.github/actions/prepare-reusable-actions
+        with:
+          repository: ${{ env.REUSABLE_REPO }}
+          ref: ${{ env.REUSABLE_REF }}
+          path: ${{ env.REUSABLE_PATH }}
+
+      - name: Sync ArgoCD application
+        uses: ./.reusable-actions/.github/actions/argocd-sync
+        with:
+          argocd-server: ${{ env.ARGOCD_SERVER }}
+          project-name: ${{ env.APP_PROJECT_NAME }}
+          application-name: ${{ env.APPLICATION_NAME }}
+          environment: ${{ env.ENVIRONMENT }}
+          namespace: ${{ env.APP_NAMESPACE }}
+          kubeconfig: ${{ secrets.KUBE_CONFIG }}
+          argocd-username: ${{ secrets.ARGOCD_USERNAME }}
+          argocd-password: ${{ secrets.ARGOCD_PASSWORD }}
+
+  Continue-Notification:
+    needs:
+      - Continue-Secret-Detection-Gitleaks
+      - Continue-Unit-Test
+      - Continue-IaC-Validation-Checkov
+      - Continue-Vulnerability-Scan-Trivy
+      - Continue-Image-Build-Push
+      - Continue-K8s-Update-Image-Tag
+      - Continue-ArgoCD-Sync
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout order-service repository
+        uses: actions/checkout@v4
+
+      - name: Checkout reusable composite actions
+        uses: ./.github/actions/prepare-reusable-actions
+        with:
+          repository: ${{ env.REUSABLE_REPO }}
+          ref: ${{ env.REUSABLE_REF }}
+          path: ${{ env.REUSABLE_PATH }}
+
+      - name: Send pipeline notification
+        uses: ./.reusable-actions/.github/actions/notification
+        with:
+          bot_token: ${{ secrets.SLACK_BOT_TOKEN }}
+          channel_id: ${{ secrets.SLACK_CHANNEL_ID }}
+          message: |
+            *ShopLite Pipeline Result*
+            Repository: `${{ github.repository }}`
+            Service: `${{ env.APPLICATION }}`
+            Branch: `${{ github.ref_name }}`
+            Commit: `${{ github.sha }}`
+            Gitleaks: `${{ needs.Continue-Secret-Detection-Gitleaks.result }}`
+            Tests: `${{ needs.Continue-Unit-Test.result }}`
+            Checkov: `${{ needs.Continue-IaC-Validation-Checkov.result }}`
+            Trivy: `${{ needs.Continue-Vulnerability-Scan-Trivy.result }}`
+            Image: `${{ needs.Continue-Image-Build-Push.result }}`
+            Manifest Update: `${{ needs.Continue-K8s-Update-Image-Tag.result }}`
+            ArgoCD Sync: `${{ needs.Continue-ArgoCD-Sync.result }}`
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
