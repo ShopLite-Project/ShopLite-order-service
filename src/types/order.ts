@@ -7,7 +7,12 @@ export type OrderStatus =
 
 export type PaymentStatus = "unpaid" | "authorized" | "paid" | "refunded";
 
-export type InventoryStatus = "unchecked" | "reserved" | "released" | "failed";
+export type InventoryStatus =
+  | "not_requested"
+  | "reservation_pending"
+  | "reserved"
+  | "released"
+  | "failed";
 
 export interface OrderItem {
   productId: string;
@@ -39,6 +44,13 @@ export interface OrderTotals {
   totalAmount: number;
 }
 
+export interface OrderInventoryReservation {
+  reference: string | null;
+  requestedAt: string | null;
+  reservedAt: string | null;
+  releasedAt: string | null;
+}
+
 export interface Order {
   id: string;
   customer: CustomerProfile;
@@ -49,6 +61,7 @@ export interface Order {
   status: OrderStatus;
   paymentStatus: PaymentStatus;
   inventoryStatus: InventoryStatus;
+  inventoryReservation: OrderInventoryReservation;
   notes: string[];
   createdAt: string;
   updatedAt: string;

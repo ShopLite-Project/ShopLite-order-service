@@ -56,7 +56,8 @@ describe("ShopLite order service", () => {
     expect(response.body.data.id).toBe("ord-1002");
     expect(response.body.data.status).toBe("pending");
     expect(response.body.data.paymentStatus).toBe("unpaid");
-    expect(response.body.data.inventoryStatus).toBe("unchecked");
+    expect(response.body.data.inventoryStatus).toBe("not_requested");
+    expect(response.body.data.inventoryReservation.reference).toBeNull();
     expect(response.body.data.totals.totalAmount).toBeGreaterThan(89.99);
   });
 
@@ -103,6 +104,7 @@ describe("ShopLite order service", () => {
       status: "paid",
       paymentStatus: "paid",
       inventoryStatus: "reserved",
+      inventoryReservationReference: "res-ord-1001-refresh",
       note: "Payment captured and stock reserved."
     });
 
@@ -127,6 +129,43 @@ describe("ShopLite order service", () => {
 
     expect(response.status).toBe(409);
     expect(response.body.error).toContain("pending");
+  });
+
+  it("requires a reservation reference when inventory becomes reserved", async () => {
+    await request(app).post("/orders").send({
+      id: "ord-1005",
+      customer: {
+        id: "cus-005",
+        email: "reserve@example.com",
+        firstName: "Kemi",
+        lastName: "Ade",
+        loyaltyTier: "silver"
+      },
+      items: [
+        {
+          productId: "prd-001",
+          name: "Rose Oud Perfume Oil",
+          quantity: 1,
+          unitPrice: 29.99
+        }
+      ],
+      shippingAddress: {
+        street: "9 Allen Avenue",
+        city: "Ikeja",
+        state: "Lagos",
+        country: "Nigeria",
+        postalCode: "100271"
+      },
+      currency: "USD"
+    });
+
+    const response = await request(app).patch("/orders/ord-1005/status").send({
+      status: "confirmed",
+      inventoryStatus: "reserved"
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body.error).toContain("inventoryReservationReference");
   });
 
   it("cancels an order cleanly", async () => {

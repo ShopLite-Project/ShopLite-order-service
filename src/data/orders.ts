@@ -35,6 +35,12 @@ export const orders: Order[] = [
     status: "confirmed",
     paymentStatus: "paid",
     inventoryStatus: "reserved",
+    inventoryReservation: {
+      reference: "res-ord-1001",
+      requestedAt: "2026-05-15T09:01:00.000Z",
+      reservedAt: "2026-05-15T09:03:00.000Z",
+      releasedAt: null
+    },
     notes: ["Seed order for local development."],
     createdAt: "2026-05-15T09:00:00.000Z",
     updatedAt: "2026-05-15T09:10:00.000Z"

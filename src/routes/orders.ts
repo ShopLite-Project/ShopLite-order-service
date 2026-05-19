@@ -53,13 +53,15 @@ const createOrderSchema = z.object({
 const updateOrderStatusSchema = z.object({
   status: z.enum(["pending", "confirmed", "paid", "fulfilled", "cancelled"]).optional(),
   paymentStatus: z.enum(["unpaid", "authorized", "paid", "refunded"]).optional(),
-  inventoryStatus: z.enum(["unchecked", "reserved", "released", "failed"]).optional(),
+  inventoryStatus: z.enum(["not_requested", "reservation_pending", "reserved", "released", "failed"]).optional(),
+  inventoryReservationReference: z.string().min(3).max(100).nullable().optional(),
   note: z.string().min(3).max(200).optional()
 }).refine(
   (payload) =>
     payload.status !== undefined ||
     payload.paymentStatus !== undefined ||
     payload.inventoryStatus !== undefined ||
+    payload.inventoryReservationReference !== undefined ||
     payload.note !== undefined,
   {
     message: "At least one update field is required"
@@ -140,6 +142,21 @@ function validateOrderWorkflowUpdate(order: Order, payload: z.infer<typeof updat
     return "Set order status to confirmed when reserving inventory for a pending order";
   }
 
+  if (
+    payload.inventoryStatus === "reserved" &&
+    payload.inventoryReservationReference === undefined &&
+    order.inventoryReservation.reference === null
+  ) {
+    return "Provide inventoryReservationReference when inventory becomes reserved";
+  }
+
+  if (
+    payload.inventoryStatus === "reservation_pending" &&
+    order.status === "cancelled"
+  ) {
+    return "Cancelled orders cannot request inventory reservation";
+  }
+
   if (order.status === "fulfilled" && payload.status !== undefined && payload.status !== "fulfilled") {
     return "Fulfilled orders cannot move back to another status";
   }
@@ -202,8 +219,14 @@ ordersRouter.post("/", (request, response) => {
     totals,
     status: "pending",
     paymentStatus: "unpaid",
-    inventoryStatus: "unchecked",
-    notes: ["Order created. Inventory and payment workflows pending."],
+    inventoryStatus: "not_requested",
+    inventoryReservation: {
+      reference: null,
+      requestedAt: null,
+      reservedAt: null,
+      releasedAt: null
+    },
+    notes: ["Order created. Inventory reservation and payment workflows pending."],
     createdAt: now,
     updatedAt: now
   };
@@ -252,6 +275,22 @@ ordersRouter.patch("/:id/status", (request, response) => {
 
   if (payload.inventoryStatus !== undefined) {
     order.inventoryStatus = payload.inventoryStatus;
+
+    if (payload.inventoryStatus === "reservation_pending") {
+      order.inventoryReservation.requestedAt = new Date().toISOString();
+    }
+
+    if (payload.inventoryStatus === "reserved") {
+      order.inventoryReservation.reservedAt = new Date().toISOString();
+    }
+
+    if (payload.inventoryStatus === "released") {
+      order.inventoryReservation.releasedAt = new Date().toISOString();
+    }
+  }
+
+  if (payload.inventoryReservationReference !== undefined) {
+    order.inventoryReservation.reference = payload.inventoryReservationReference;
   }
 
   if (payload.note !== undefined) {
@@ -298,8 +337,12 @@ ordersRouter.post("/:id/cancel", (request, response) => {
   }
 
   order.status = "cancelled";
-  order.inventoryStatus = order.inventoryStatus === "reserved" ? "released" : order.inventoryStatus;
+  order.inventoryStatus =
+    order.inventoryStatus === "reserved" || order.inventoryStatus === "reservation_pending"
+      ? "released"
+      : order.inventoryStatus;
   order.paymentStatus = order.paymentStatus === "paid" ? "refunded" : order.paymentStatus;
+  order.inventoryReservation.releasedAt = new Date().toISOString();
   order.notes.push(`Order cancelled: ${parsedPayload.data.reason}`);
   order.updatedAt = new Date().toISOString();
 

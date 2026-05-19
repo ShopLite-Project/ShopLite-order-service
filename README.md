@@ -27,6 +27,7 @@ Each order now carries:
 - order status
 - payment status
 - inventory status
+- inventory reservation reference/timestamps
 - notes for workflow updates
 
 That keeps the service simple now, while making it easier to connect payment, inventory, and event-driven workflows later.
@@ -45,6 +46,26 @@ Additional guards:
 - an order cannot become `fulfilled` before inventory is `reserved`
 - cancelling a paid order marks payment as `refunded`
 - cancelling a reserved order releases inventory
+
+## Order and Inventory Contract
+
+Current intended flow:
+
+1. `order-service` creates an order with `inventoryStatus: not_requested`
+2. when the order is ready for stock allocation, it moves to `reservation_pending`
+3. `inventory-service` reserves stock by `orderId`, `productId`, and `quantity`
+4. `order-service` is then updated to:
+   - `status: confirmed`
+   - `inventoryStatus: reserved`
+   - `inventoryReservationReference: <reservation id>`
+5. if payment succeeds, the order can move to `paid`
+6. only then can the order move to `fulfilled`
+7. if the order is cancelled, inventory is marked `released`
+
+This keeps the responsibilities clean:
+
+- `order-service` owns workflow state
+- `inventory-service` owns actual stock counts and reservation records
 
 ## Local development
 
