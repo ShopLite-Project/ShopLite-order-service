@@ -1,6 +1,12 @@
 import { Router } from "express";
 import { z } from "zod";
 
+import {
+  confirmOrderInventory,
+  integrationsEnabled,
+  queueNotificationIfEnabled,
+  releaseOrderInventory
+} from "../services/order-integrations";
 import { orders } from "../data/orders";
 import { Order } from "../types/order";
 
@@ -70,6 +76,10 @@ const updateOrderStatusSchema = z.object({
 
 const cancelOrderSchema = z.object({
   reason: z.string().min(5).max(200)
+});
+
+const confirmOrderSchema = z.object({
+  note: z.string().min(3).max(200).optional()
 });
 
 function calculateOrderTotals(items: Order["items"]) {
@@ -190,7 +200,7 @@ ordersRouter.get("/:id", (request, response) => {
   response.status(200).json({ data: order });
 });
 
-ordersRouter.post("/", (request, response) => {
+ordersRouter.post("/", async (request, response) => {
   const parsedPayload = createOrderSchema.safeParse(request.body);
 
   if (!parsedPayload.success) {
@@ -232,12 +242,26 @@ ordersRouter.post("/", (request, response) => {
   };
 
   orders.push(newOrder);
+
+  if (integrationsEnabled()) {
+    try {
+      await queueNotificationIfEnabled(newOrder, "order_created");
+      newOrder.notes.push("Notification queued for order_created event.");
+      newOrder.updatedAt = new Date().toISOString();
+    } catch (error) {
+      newOrder.notes.push(
+        `Notification queue attempt failed: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+      newOrder.updatedAt = new Date().toISOString();
+    }
+  }
+
   response.status(201).json({
     data: newOrder
   });
 });
 
-ordersRouter.patch("/:id/status", (request, response) => {
+ordersRouter.patch("/:id/status", async (request, response) => {
   const parsedPayload = updateOrderStatusSchema.safeParse(request.body);
 
   if (!parsedPayload.success) {
@@ -299,12 +323,115 @@ ordersRouter.patch("/:id/status", (request, response) => {
 
   order.updatedAt = new Date().toISOString();
 
+  if (integrationsEnabled()) {
+    try {
+      if (payload.status === "paid") {
+        await queueNotificationIfEnabled(order, "order_paid");
+        order.notes.push("Notification queued for order_paid event.");
+      }
+
+      if (payload.status === "fulfilled") {
+        await queueNotificationIfEnabled(order, "order_fulfilled");
+        order.notes.push("Notification queued for order_fulfilled event.");
+      }
+
+      order.updatedAt = new Date().toISOString();
+    } catch (error) {
+      order.notes.push(
+        `Notification queue attempt failed: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+      order.updatedAt = new Date().toISOString();
+    }
+  }
+
   response.status(200).json({
     data: order
   });
 });
 
-ordersRouter.post("/:id/cancel", (request, response) => {
+ordersRouter.post("/:id/confirm", async (request, response) => {
+  const parsedPayload = confirmOrderSchema.safeParse(request.body ?? {});
+
+  if (!parsedPayload.success) {
+    response.status(400).json({
+      error: "Invalid confirm payload",
+      issues: parsedPayload.error.flatten()
+    });
+    return;
+  }
+
+  const order = orders.find((item) => item.id === request.params.id);
+
+  if (!order) {
+    response.status(404).json({ error: "Order not found" });
+    return;
+  }
+
+  if (order.status !== "pending") {
+    response.status(409).json({
+      error: "Only pending orders can be confirmed"
+    });
+    return;
+  }
+
+  order.inventoryStatus = "reservation_pending";
+  order.inventoryReservation.requestedAt = new Date().toISOString();
+  order.notes.push(parsedPayload.data.note ?? "Inventory reservation requested.");
+  order.updatedAt = new Date().toISOString();
+
+  const reservationResult = await confirmOrderInventory(order);
+
+  if (!reservationResult.success) {
+    order.inventoryStatus = "failed";
+    order.notes.push(`Inventory reservation failed: ${reservationResult.message}`);
+    order.updatedAt = new Date().toISOString();
+
+    if (integrationsEnabled()) {
+      try {
+        await queueNotificationIfEnabled(order, "inventory_reservation_failed");
+        order.notes.push("Notification queued for inventory_reservation_failed event.");
+        order.updatedAt = new Date().toISOString();
+      } catch (error) {
+        order.notes.push(
+          `Notification queue attempt failed: ${error instanceof Error ? error.message : "Unknown error"}`
+        );
+        order.updatedAt = new Date().toISOString();
+      }
+    }
+
+    response.status(409).json({
+      error: reservationResult.message,
+      data: order
+    });
+    return;
+  }
+
+  order.status = "confirmed";
+  order.inventoryStatus = "reserved";
+  order.inventoryReservation.reference = reservationResult.reservationReference;
+  order.inventoryReservation.reservedAt = new Date().toISOString();
+  order.notes.push("Inventory reserved and order confirmed.");
+  order.updatedAt = new Date().toISOString();
+
+  if (integrationsEnabled()) {
+    try {
+      await queueNotificationIfEnabled(order, "order_confirmed");
+      order.notes.push("Notification queued for order_confirmed event.");
+      order.updatedAt = new Date().toISOString();
+    } catch (error) {
+      order.notes.push(
+        `Notification queue attempt failed: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+      order.updatedAt = new Date().toISOString();
+    }
+  }
+
+  response.status(200).json({
+    data: order
+  });
+});
+
+ordersRouter.post("/:id/cancel", async (request, response) => {
   const parsedPayload = cancelOrderSchema.safeParse(request.body);
 
   if (!parsedPayload.success) {
@@ -336,6 +463,20 @@ ordersRouter.post("/:id/cancel", (request, response) => {
     return;
   }
 
+  const shouldReleaseInventory = order.inventoryStatus === "reserved";
+
+  if (shouldReleaseInventory && integrationsEnabled()) {
+    try {
+      await releaseOrderInventory(order);
+      order.notes.push("Inventory release requested for cancelled order.");
+    } catch (error) {
+      response.status(502).json({
+        error: error instanceof Error ? error.message : "Inventory release failed"
+      });
+      return;
+    }
+  }
+
   order.status = "cancelled";
   order.inventoryStatus =
     order.inventoryStatus === "reserved" || order.inventoryStatus === "reservation_pending"
@@ -345,6 +486,19 @@ ordersRouter.post("/:id/cancel", (request, response) => {
   order.inventoryReservation.releasedAt = new Date().toISOString();
   order.notes.push(`Order cancelled: ${parsedPayload.data.reason}`);
   order.updatedAt = new Date().toISOString();
+
+  if (integrationsEnabled()) {
+    try {
+      await queueNotificationIfEnabled(order, "order_cancelled");
+      order.notes.push("Notification queued for order_cancelled event.");
+      order.updatedAt = new Date().toISOString();
+    } catch (error) {
+      order.notes.push(
+        `Notification queue attempt failed: ${error instanceof Error ? error.message : "Unknown error"}`
+      );
+      order.updatedAt = new Date().toISOString();
+    }
+  }
 
   response.status(200).json({
     data: order

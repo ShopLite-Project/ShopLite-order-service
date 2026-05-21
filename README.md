@@ -14,6 +14,7 @@ This service is intentionally small but shows the control points you need for a 
 - `GET /orders`
 - `GET /orders/:id`
 - `POST /orders`
+- `POST /orders/:id/confirm`
 - `PATCH /orders/:id/status`
 - `POST /orders/:id/cancel`
 
@@ -54,13 +55,15 @@ Current intended flow:
 1. `order-service` creates an order with `inventoryStatus: not_requested`
 2. when the order is ready for stock allocation, it moves to `reservation_pending`
 3. `inventory-service` reserves stock by `orderId`, `productId`, and `quantity`
-4. `order-service` is then updated to:
+4. `order-service` can call `POST /orders/:id/confirm` to orchestrate reservation over HTTP
+5. if reservation succeeds, `order-service` is updated to:
    - `status: confirmed`
    - `inventoryStatus: reserved`
    - `inventoryReservationReference: <reservation id>`
-5. if payment succeeds, the order can move to `paid`
-6. only then can the order move to `fulfilled`
-7. if the order is cancelled, inventory is marked `released`
+6. `notification-service` can be called to queue an `order_confirmed` notification
+7. if payment succeeds, the order can move to `paid`
+8. only then can the order move to `fulfilled`
+9. if the order is cancelled, inventory is marked `released`
 
 This keeps the responsibilities clean:
 
@@ -72,6 +75,16 @@ This keeps the responsibilities clean:
 ```bash
 npm ci
 npm run dev
+```
+
+## Integration settings
+
+Set these when you want `order-service` to call other local services directly:
+
+```bash
+ENABLE_SERVICE_INTEGRATIONS=true
+INVENTORY_SERVICE_BASE_URL=http://localhost:3003
+NOTIFICATION_SERVICE_BASE_URL=http://localhost:3004
 ```
 
 ## Docker

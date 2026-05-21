@@ -61,6 +61,43 @@ describe("ShopLite order service", () => {
     expect(response.body.data.totals.totalAmount).toBeGreaterThan(89.99);
   });
 
+  it("confirms a pending order through the orchestration endpoint when integrations are disabled", async () => {
+    await request(app).post("/orders").send({
+      id: "ord-1006",
+      customer: {
+        id: "cus-006",
+        email: "confirm@example.com",
+        firstName: "Lara",
+        lastName: "Bello",
+        loyaltyTier: "gold"
+      },
+      items: [
+        {
+          productId: "prd-001",
+          name: "Rose Oud Perfume Oil",
+          quantity: 1,
+          unitPrice: 29.99
+        }
+      ],
+      shippingAddress: {
+        street: "15 Bourdillon Road",
+        city: "Ikoyi",
+        state: "Lagos",
+        country: "Nigeria",
+        postalCode: "100233"
+      },
+      currency: "USD"
+    });
+
+    const response = await request(app).post("/orders/ord-1006/confirm").send({
+      note: "Trying direct HTTP confirmation."
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body.error).toContain("disabled");
+    expect(response.body.data.inventoryStatus).toBe("failed");
+  });
+
   it("rejects duplicate product ids in one order", async () => {
     const response = await request(app).post("/orders").send({
       id: "ord-1003",
