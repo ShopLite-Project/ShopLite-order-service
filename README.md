@@ -87,6 +87,27 @@ INVENTORY_SERVICE_BASE_URL=http://localhost:3003
 NOTIFICATION_SERVICE_BASE_URL=http://localhost:3004
 ```
 
+## Kafka Notes
+
+Kafka is the message broker, not a folder inside the service.
+
+- local `docker-compose` is used to run a real Kafka broker during development
+- service code such as `src/kafka/` or Kafka-related service modules contains the producer and consumer logic
+- `order-service` publishes order events
+- other services subscribe to those events and react independently
+
+Simple mental model:
+
+- Docker Compose starts Kafka locally
+- this service connects to Kafka through its application code
+- Kafka carries events between services
+
+For Kubernetes later:
+
+- Kafka runs in pods, just like the application services run in pods
+- a Kafka operator such as Strimzi can manage the Kafka brokers for you
+- your service code does not change much; the broker address changes from local Docker networking to Kubernetes service discovery
+
 ## Docker
 
 ```bash

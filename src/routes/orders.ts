@@ -9,6 +9,14 @@ import {
 } from "../services/order-integrations";
 import { orders } from "../data/orders";
 import { Order } from "../types/order";
+import { publishOrderEvent } from "../services/kafka";
+import {
+  applyInventoryReservationFailed,
+  applyInventoryReservationRequested,
+  applyInventoryReserved,
+  calculateOrderTotals,
+  canTransitionOrderStatus
+} from "../services/order-workflow";
 
 const customerSchema = z.object({
   id: z.string().min(3),
@@ -81,35 +89,6 @@ const cancelOrderSchema = z.object({
 const confirmOrderSchema = z.object({
   note: z.string().min(3).max(200).optional()
 });
-
-function calculateOrderTotals(items: Order["items"]) {
-  const subtotalAmount = items.reduce(
-    (sum, item) => sum + item.quantity * item.unitPrice,
-    0
-  );
-  const shippingAmount = subtotalAmount >= 100 ? 0 : 7.5;
-  const taxAmount = Number((subtotalAmount * 0.075).toFixed(2));
-  const totalAmount = Number((subtotalAmount + shippingAmount + taxAmount).toFixed(2));
-
-  return {
-    subtotalAmount: Number(subtotalAmount.toFixed(2)),
-    shippingAmount,
-    taxAmount,
-    totalAmount
-  };
-}
-
-function canTransitionOrderStatus(currentStatus: Order["status"], nextStatus: Order["status"]) {
-  const allowedTransitions: Record<Order["status"], Order["status"][]> = {
-    pending: ["confirmed", "cancelled"],
-    confirmed: ["paid", "cancelled"],
-    paid: ["fulfilled", "cancelled"],
-    fulfilled: [],
-    cancelled: []
-  };
-
-  return allowedTransitions[currentStatus].includes(nextStatus);
-}
 
 function validateOrderWorkflowUpdate(order: Order, payload: z.infer<typeof updateOrderStatusSchema>) {
   if (payload.status !== undefined && payload.status !== order.status) {
@@ -243,6 +222,8 @@ ordersRouter.post("/", async (request, response) => {
 
   orders.push(newOrder);
 
+  await publishOrderEvent(newOrder, "order_created").catch(() => undefined);
+
   if (integrationsEnabled()) {
     try {
       await queueNotificationIfEnabled(newOrder, "order_created");
@@ -326,11 +307,13 @@ ordersRouter.patch("/:id/status", async (request, response) => {
   if (integrationsEnabled()) {
     try {
       if (payload.status === "paid") {
+        await publishOrderEvent(order, "order_paid").catch(() => undefined);
         await queueNotificationIfEnabled(order, "order_paid");
         order.notes.push("Notification queued for order_paid event.");
       }
 
       if (payload.status === "fulfilled") {
+        await publishOrderEvent(order, "order_fulfilled").catch(() => undefined);
         await queueNotificationIfEnabled(order, "order_fulfilled");
         order.notes.push("Notification queued for order_fulfilled event.");
       }
@@ -341,6 +324,16 @@ ordersRouter.patch("/:id/status", async (request, response) => {
         `Notification queue attempt failed: ${error instanceof Error ? error.message : "Unknown error"}`
       );
       order.updatedAt = new Date().toISOString();
+    }
+  }
+
+  if (!integrationsEnabled()) {
+    if (payload.status === "paid") {
+      await publishOrderEvent(order, "order_paid").catch(() => undefined);
+    }
+
+    if (payload.status === "fulfilled") {
+      await publishOrderEvent(order, "order_fulfilled").catch(() => undefined);
     }
   }
 
@@ -374,17 +367,17 @@ ordersRouter.post("/:id/confirm", async (request, response) => {
     return;
   }
 
-  order.inventoryStatus = "reservation_pending";
-  order.inventoryReservation.requestedAt = new Date().toISOString();
-  order.notes.push(parsedPayload.data.note ?? "Inventory reservation requested.");
-  order.updatedAt = new Date().toISOString();
+  applyInventoryReservationRequested(
+    order,
+    parsedPayload.data.note ?? "Inventory reservation requested."
+  );
+
+  await publishOrderEvent(order, "inventory_reservation_requested").catch(() => undefined);
 
   const reservationResult = await confirmOrderInventory(order);
 
   if (!reservationResult.success) {
-    order.inventoryStatus = "failed";
-    order.notes.push(`Inventory reservation failed: ${reservationResult.message}`);
-    order.updatedAt = new Date().toISOString();
+    applyInventoryReservationFailed(order, reservationResult.message);
 
     if (integrationsEnabled()) {
       try {
@@ -406,12 +399,12 @@ ordersRouter.post("/:id/confirm", async (request, response) => {
     return;
   }
 
-  order.status = "confirmed";
-  order.inventoryStatus = "reserved";
-  order.inventoryReservation.reference = reservationResult.reservationReference;
-  order.inventoryReservation.reservedAt = new Date().toISOString();
-  order.notes.push("Inventory reserved and order confirmed.");
-  order.updatedAt = new Date().toISOString();
+  applyInventoryReserved(
+    order,
+    reservationResult.reservationReference ?? `res-${order.id}`
+  );
+
+  await publishOrderEvent(order, "order_confirmed").catch(() => undefined);
 
   if (integrationsEnabled()) {
     try {
@@ -486,6 +479,8 @@ ordersRouter.post("/:id/cancel", async (request, response) => {
   order.inventoryReservation.releasedAt = new Date().toISOString();
   order.notes.push(`Order cancelled: ${parsedPayload.data.reason}`);
   order.updatedAt = new Date().toISOString();
+
+  await publishOrderEvent(order, "order_cancelled").catch(() => undefined);
 
   if (integrationsEnabled()) {
     try {
