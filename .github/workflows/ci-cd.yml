@@ -8,17 +8,17 @@ on:
 env:
   APPLICATION: shoplite-order-service
   APPLICATION_NAME: order-service
-  ENVIRONMENT: sandbox
+  ENVIRONMENT: stage
   IMAGE_NAME: shoplite-order-service
   IMAGE_REPOSITORY: ghcr.io/shoplite-project/shoplite-order-service
   K8S_REPO: ShopLite-Project/Kubernetes-ArgoCD-Deployments
-  K8S_MANIFEST_PATH: environments/sandbox/applications/shoplite/shoplite-order-service/values.yaml
-  REUSABLE_REPO: ShopLite-Project/reusable-workflows
+  K8S_MANIFEST_PATH: environments/stage/applications/shoplite/shoplite-order-service/values.yaml
+  REUSABLE_REPO: ShopLite-Project/reusable-actions
   REUSABLE_REF: main
   REUSABLE_PATH: ./.reusable-actions
   APP_PROJECT_NAME: shoplite
-  APP_NAMESPACE: shoplite-sandbox
-  ARGOCD_SERVER: argocd.sandbox.shoplite.local
+  APP_NAMESPACE: shoplite-stage
+  ARGOCD_SERVER: argocd.stage.shoplite.local
 
 permissions:
   contents: read
@@ -136,8 +136,8 @@ jobs:
           context: .
           push: ${{ github.ref == 'refs/heads/main' && 'true' || 'false' }}
           tags: |
-            sandbox-${{ github.sha }}
-            sandbox-latest
+            stage-${{ github.sha }}
+            stage-latest
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
@@ -161,11 +161,11 @@ jobs:
           target_repository: ${{ env.K8S_REPO }}
           target_branch: main
           manifest_path: ${{ env.K8S_MANIFEST_PATH }}
-          image_tag: sandbox-${{ github.sha }}
+          image_tag: stage-${{ github.sha }}
           yaml_key_path: image.tag
           commit_user_name: github-actions[bot]
           commit_user_email: 41898282+github-actions[bot]@users.noreply.github.com
-          commit_message: "chore(shoplite-order-service): update image to sandbox-${{ github.sha }}"
+          commit_message: "chore(shoplite-order-service): update image to stage-${{ github.sha }}"
 
   Continue-ArgoCD-Sync:
     needs: [Continue-K8s-Update-Image-Tag]
